@@ -403,7 +403,7 @@
         <div class="set-row" style="flex-direction:column;align-items:flex-start;gap:8px">
           <div><div class="sl">Auto-save to cloud</div><div class="sd">Paste a GitHub token → data saves automatically on every change, loads on any device</div></div>
           <input type="password" id="ghToken" placeholder="ghp_your_token_here" style="width:100%;font-size:12px;font-family:monospace">
-          <div style="font-size:11px;color:var(--dim)">Get one free: <b>github.com → Settings → Developer settings → Personal access tokens → Fine-grained → New token</b> → only check <b>Gists (read & write)</b></div>
+          <div style="font-size:11px;color:var(--dim)">Get one free: <b>github.com/settings/tokens/new</b> (classic token) → check only <b>gist</b> → Generate</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             <button class="editbtn" id="ghConnect" style="background:var(--ink);color:#000;font-weight:700">Connect & Sync Now</button>
             <button class="delbtn" id="ghDisconnect" style="display:none">Disconnect</button>
@@ -736,7 +736,39 @@ function makeInvoicePdf(r, billTo, pay){
   return btoa(pdf);
 }
 
+
+function pdfBlob(r){
+  const billTo=(allVenues()[r.venue]||{}).billTo||r.venue;
+  const b64=makeInvoicePdf(r,billTo,payment); const bin=atob(b64); const u=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) u[i]=bin.charCodeAt(i);
+  return new Blob([u],{type:"application/pdf"});
+}
+const pdfName=r=>`${String(r.venue).replace(/[^A-Za-z0-9]+/g,"")}_Invoice_${r.inv}.pdf`;
+function saveBlob(blob,name){
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=name; document.body.appendChild(a); a.click();
+  setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},4000);
+}
+function downloadPdf(r){
+  if(!payment.account) toast("Heads up: add account/routing in Settings → Payment or they'll be blank on the PDF",false,true);
+  try{ saveBlob(pdfBlob(r),pdfName(r)); if(payment.account) toast(`PDF saved — ${esc(pdfName(r))}`); }catch(e){ toast("Couldn't build the PDF",false); }
+}
+/* Outside Claude: share sheet with the PDF attached, or download + open the email app */
+async function emailStandalone(r){
+  const t=emailTemplate(r), blob=pdfBlob(r), name=pdfName(r);
+  const file=new File([blob],name,{type:"application/pdf"});
+  try{
+    if(navigator.canShare&&navigator.canShare({files:[file]})){
+      await navigator.share({files:[file],title:t.subject,text:(t.to?`To: ${t.to}\n`:"")+t.body}); return;
+    }
+  }catch(e){ if(e&&e.name==="AbortError") return; }
+  saveBlob(blob,name);
+  const q="subject="+encodeURIComponent(t.subject)+"&body="+encodeURIComponent(t.body+"\n\n(Attach the PDF that just downloaded: "+name+")")+(t.cc?"&cc="+encodeURIComponent(t.cc):"");
+  toast("PDF downloaded — attach it in the email that opens",true,true);
+  setTimeout(()=>{ location.href="mailto:"+encodeURIComponent(t.to||"")+"?"+q; },700);
+}
+
 async function draftEmail(r, btn){
+  if(!(window.cowork&&window.cowork.callMcpTool)){ emailStandalone(r); return; }
   const t = emailTemplate(r);
   if(!t.to){ toast("Set a <b>Send to</b> email in the "+esc(r.venue)+" preset first", false); return; }
   btnBusy(btn,"Building PDF…");
@@ -924,7 +956,7 @@ function render(){
     return `<div class="inv">
       <div class="main"><div class="venue">${esc(r.venue)}${r.note?` <span class="note-in">· ${esc(r.note)}</span>`:""}</div><div class="meta">${meta}</div></div>
       <div class="controls"><div class="amt">${money(r.amount)}</div>
-      ${r.status!=="Paid"?`<button class="mailbtn" data-mail="${r.id}">✉ Draft</button>`:""}
+      <button class="mailbtn" data-pdf="${r.id}" style="background:var(--gold-dim);color:var(--gold)">⬇ PDF</button>${r.status!=="Paid"?`<button class="mailbtn" data-mail="${r.id}">✉ Email</button>`:""}
       <button class="pill ${r.status==="Paid"?"paid":"unpaid"}" data-toggle="${r.id}">${r.status}</button>
       <button class="icon-btn" data-edit="${r.id}" title="Edit">✎</button>
       <button class="icon-btn" data-del="${r.id}" title="Delete">✕</button></div>
@@ -1021,12 +1053,13 @@ function initSettings(){
 }
 
 document.addEventListener("click", e=>{
-  const el=e.target.closest("[data-p],[data-f],[data-qinv],[data-skip],[data-mail],[data-toggle],[data-del],[data-edit],[data-pedit],[data-pdel],[data-pnew],[data-psave],[data-pcancel],[data-dtab]") || e.target;
+  const el=e.target.closest("[data-p],[data-f],[data-qinv],[data-skip],[data-mail],[data-pdf],[data-toggle],[data-del],[data-edit],[data-pedit],[data-pdel],[data-pnew],[data-psave],[data-pcancel],[data-dtab]") || e.target;
   if(el.dataset.dtab){ switchTab(el.dataset.dtab); return; }
   if(el.dataset.p){ period=el.dataset.p; document.querySelectorAll(".pbtn").forEach(b=>b.classList.toggle("on",b.dataset.p===period)); render(); return; }
   if(el.dataset.f){ filter=el.dataset.f; document.querySelectorAll(".chip").forEach(c=>c.classList.toggle("on",c===el)); render(); return; }
   if(el.dataset.qinv){ const [date,...t]=el.dataset.qinv.split("|"); const title=t.join("|"); const s=allShows().find(x=>String(x.date)===date&&(x.title||x.venue)===title); if(s) prefillInvoice(s); return; }
   if(el.dataset.skip){ skips[el.dataset.skip]=!skips[el.dataset.skip]; save(); render(); toast(skips[el.dataset.skip]?"Marked n/a — no invoice needed":"Back in the queue"); return; }
+  if(el.dataset.pdf){ const r=data.find(x=>x.id==el.dataset.pdf); downloadPdf(r); return; }
   if(el.dataset.mail){ const r=data.find(x=>x.id==el.dataset.mail); draftEmail(r, el); return; }
   if(el.dataset.toggle){ const r=data.find(x=>x.id==el.dataset.toggle); if(r.status==="Paid"){r.status="Unpaid";delete r.paidDate; toast(`${esc(r.venue)} #${r.inv} marked <b>unpaid</b>`);} else {r.status="Paid";r.paidDate=today(); toast(`💰 ${esc(r.venue)} #${r.inv} paid — ${money(r.amount)} collected`);} save(); render(); return; }
   if(el.dataset.del){ if(confirm("Delete this invoice from the log?")){ data=data.filter(x=>x.id!=el.dataset.del); save(); render(); toast("Invoice deleted"); } return; }
